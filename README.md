@@ -67,5 +67,17 @@ For example, the above provides how to run the results of DiCaP on voc with 0.05
 bash ./script/run.sh
 ```
 
-## 4. Reference
+## 4. Citation
+If you find DiCaP helpful, please cite:
+
+```bibtex
+@inproceedings{DICAP,
+      title={DiCaP: Distribution-Calibrated Pseudo-labeling for Semi-Supervised Multi-Label Learning}, 
+      author={Bo Han and Zhuoming Li and Xiaoyu Wang and Yaxin Hou and Hui Liu and Junhui Hou and Yuheng Jia},
+      year={2026},
+    booktitle    = {{AAAI}}
+}
+```
+
+## 5. Reference
 This codebase refers to D2L [[link](https://github.com/JiahaoXxX/SSMLL-D2L_MAT)], DESP [[link](https://github.com/yihanxxu/DESP)], BBAM [[link](https://github.com/changchunli/SSMLL-BBAM)], thank them!
