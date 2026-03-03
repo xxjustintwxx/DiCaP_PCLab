@@ -75,7 +75,7 @@ If you find DiCaP helpful, please cite:
 title={DiCaP: Distribution-Calibrated Pseudo-labeling for Semi-Supervised Multi-Label Learning}, 
 author={Bo Han and Zhuoming Li and Xiaoyu Wang and Yaxin Hou and Hui Liu and Junhui Hou and Yuheng Jia},
 year={2026},
-booktitle    = {{AAAI}}
+booktitle={{AAAI}}
 }
 ```
 
