@@ -875,3 +875,114 @@ output/cxr_ours/{key}/task2_per_class_mAP.txt
 output/cxr_ours/{key}/task2_per_class_mAP_{dataset_name}_lb{lb_ratio}_{net}.png
 output/cxr_ours/{key}/task2_class_tp_{dataset_name}_lb{lb_ratio}_{net}_thr0.5.png
 ```
+
+---
+
+## Backbone Swap: ConvNeXt-Base
+
+### Motivation
+
+CXR-LT 2024 paper analysis: many top teams used ConvNeXt or EfficientNetV2 backbones pretrained on
+MIMIC-CXR, whereas our current best model (TResNet_L) was pretrained only on ImageNet-1K. Swapping
+to ConvNeXt-Base with ImageNet-22K pretraining gives richer initialization (14M images, 22K classes)
+and matches the architecture choices of higher-scoring teams.
+
+ConvNeXt-Base chosen over:
+- ConvNeXt-Large: 197M params vs 89M — doubles training time for marginal gain
+- EfficientNetV2: messier internal block structure, harder to extract clean spatial feature maps
+- DenseNet121 (torchxrayvision): would require dropping the ML-Decoder head entirely
+
+The ML-Decoder head (`ClasswiseEncoder`) is kept unchanged — only the backbone is swapped, so any
+mAP difference is attributable to the backbone alone.
+
+---
+
+### Architecture Compatibility Verification
+
+Verified 2026-05-26 with `timm==1.0.19`, `convnext_base.fb_in22k_ft_in1k`, input 512×512:
+
+```
+named_children: ['stem', 'stages', 'norm_pre', 'head']
+
+after stem:     [1, 128, 128, 128]   (4× downsample)
+after stages:   [1, 1024, 16, 16]    (32× total, 1024-D features)
+after norm_pre: [1, 1024, 16, 16]    (LayerNorm, same shape)
+```
+
+`norm_pre` is a top-level named child → `IntermediateLayerExtracter` cuts cleanly at `norm_pre`,
+forwarding `stem → stages → norm_pre` and returning normalized `[B, 1024, H//32, W//32]`.
+
+`ClasswiseEncoder` then does:
+```
+[B, 1024, 16, 16] → flatten → [B, 256, 1024] → feature_projector → [B, 256, 512]
+```
+The `feature_projector` (`nn.Linear(dim_feature, dim_embed)`) re-initializes automatically when
+`dim_feature` changes from 2432 (TResNet_L) to 1024 — no other head changes needed.
+
+---
+
+### Code Changes Required
+
+#### 1. `lib/ML_decoder/backbone/cnn.py`
+
+Add to `_MODELS` dict:
+```python
+"convnext_base":  lambda pretrained: timm.create_model(
+    "convnext_base.fb_in22k_ft_in1k", pretrained=pretrained),
+"convnext_large": lambda pretrained: timm.create_model(
+    "convnext_large.fb_in22k_ft_in1k", pretrained=pretrained),
+```
+
+Add to `_MODELS_INFO` dict:
+```python
+"convnext_base":  ModelInfo("norm_pre", "head.fc", 1024, 1024, 1000, 32),
+"convnext_large": ModelInfo("norm_pre", "head.fc", 1536, 1536, 1000, 32),
+```
+
+Update `create_cnn_backbone` — add `elif "convnext" in name:` branch:
+```python
+elif "convnext" in name:
+    model = _MODELS[name](pretrained=pretrained)
+```
+
+The existing `IntermediateLayerExtracter` and `create_featuremap_backbone` need no changes.
+
+#### 2. `script/run.sh` / `warm_up.py` / `fine_tune.py`
+
+No structural changes. Pass `--net convnext_base` at the CLI. Warmup and fine-tune scripts already
+accept `args.net` as a string — they work unchanged.
+
+#### 3. `format_cxr2024.py` (and variants)
+
+No changes needed — data pipeline is backbone-agnostic.
+
+---
+
+### Experiment Plan
+
+Run warmup only first to get a cheap signal before committing to full SSL training.
+
+| Step | Command | Purpose |
+|------|---------|---------|
+| 1. Warmup baseline (already done) | `--net tresnet_l --lb_ratio 1.0` | Reference: 40-class warmup mAP |
+| 2. ConvNeXt warmup | `--net convnext_base --lb_ratio 1.0` | Comparable warmup mAP |
+| 3. If ≥ TResNet_L: full SSL | `--net convnext_base --lb_ratio 0.066` | Tail-boost SSL run |
+| 4. Task 1 + Task 2 eval | `bash script/run_task2_eval.sh` | Compare both tasks |
+
+Decision rule: if ConvNeXt warmup mAP ≥ TResNet_L warmup mAP, proceed to full SSL pipeline.
+If < TResNet_L, investigate whether longer warmup epochs or lower LR closes the gap before giving up.
+
+**Estimated compute per warmup run:** similar to current TResNet_L warmup (ConvNeXt-Base ~89M params vs TResNet_L ~55M — roughly 1.5–1.6× more FLOPs per forward pass, offset partially by ConvNeXt's higher memory efficiency).
+
+---
+
+### Hyperparameter Notes for ConvNeXt
+
+- **Learning rate**: ConvNeXt is generally more sensitive to LR than TResNet. If current LR causes
+  instability, try 0.5× the TResNet_L LR as a starting point.
+- **Weight decay**: ConvNeXt authors recommend higher weight decay (0.05–0.1) vs ResNet defaults.
+  Current `args.weight_decay` may need tuning.
+- **Image size**: Current 512×512 gives 16×16 feature maps. Could try 448×448 (14×14) to reduce
+  memory if batch size is constrained. Don't go below 384×384 (12×12 feature maps get sparse).
+- **`dim_embed`**: Currently 512. With 1024-D backbone features the projection ratio is 2:1 (same
+  direction as TResNet_L's 2432→512). No change needed but 768 or 1024 could be explored later.

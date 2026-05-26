@@ -14,6 +14,8 @@ _MODELS = {
     "tresnet_l": timm.models.tresnet.tresnet_l,
     "tresnet_xl": timm.models.tresnet.tresnet_xl,
     "tresnet_v2_l": timm.models.tresnet.tresnet_v2_l,
+    "convnext_base":  lambda pretrained: timm.create_model("convnext_base.fb_in22k_ft_in1k",  pretrained=pretrained),
+    "convnext_large": lambda pretrained: timm.create_model("convnext_large.fb_in22k_ft_in1k", pretrained=pretrained),
 }
 
 
@@ -37,6 +39,8 @@ _MODELS_INFO = {
     "tresnet_l": ModelInfo("body", "head.fc", 2432, 2432, 1000, 32),
     "tresnet_xl": ModelInfo("body", "head.fc", 2656, 2656, 1000, 32),
     "tresnet_v2_l": ModelInfo("body", "head.fc", 2048, 2048, 1000, 32),
+    "convnext_base":  ModelInfo("norm_pre", "head.fc", 1024, 1024, 1000, 32),
+    "convnext_large": ModelInfo("norm_pre", "head.fc", 1536, 1536, 1000, 32),
 }
 
 
@@ -49,18 +53,12 @@ def create_cnn_backbone(name, *, num_classes=None, pretrained=False):
     assert name in _MODELS.keys()
     if "tresnet" in name:
         model = _MODELS[name](pretrained=pretrained)
-        """info = {
-            "layer_featuremap": "layer4",
-            "layer_fc": "fc",
-            "dim_featuremap": model.layer4[-1].conv1.in_channels,
-            "dim_fc": model.fc.in_features,
-            "dim_out": model.fc.out_features,
-            "downsample_ratio": 32,
-        }"""
 
     elif "resnet" in name:
         model = _MODELS[name](weights="DEFAULT" if pretrained else None)
 
+    elif "convnext" in name:
+        model = _MODELS[name](pretrained)
 
     if num_classes is not None:
         info = _MODELS_INFO[name]
