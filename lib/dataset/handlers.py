@@ -68,7 +68,25 @@ class VOC2012_handler(Dataset):
 
     def __getitem__(self, index):
         x = Image.open(os.path.join(self.data_path, self.X[index])).convert('RGB')
-        x = self.transform(x)        
+        x = self.transform(x)
+        y = self.Y[index]
+        return x, y, index
+
+    def __len__(self):
+        return len(self.X)
+
+
+class CXR_handler(Dataset):
+    def __init__(self, X, Y, data_path, transform=None):
+        self.X = X
+        self.Y = Y
+        self.transform = transform
+        self.data_path = data_path
+
+    def __getitem__(self, index):
+        # X contains absolute paths; os.path.join ignores data_path when path is absolute
+        x = Image.open(os.path.join(self.data_path, self.X[index])).convert('RGB')
+        x = self.transform(x)
         y = self.Y[index]
         return x, y, index
 

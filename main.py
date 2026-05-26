@@ -4,18 +4,19 @@ import time
 import random
 import json
 
+import numpy as np
 import torch
 from torch.optim import lr_scheduler
 import torch.optim
 import torch.utils.data
 
 import _init_paths
-from lib.dataset.get_dataset import get_datasets
+from lib.dataset.get_dataset import get_datasets, HANDLER_DICT, TransformWithPatches_Train
 
 from lib.utils.logger import setup_logger
 from lib.utils.meter import AverageMeter, AverageMeterHMS, ProgressMeter
 from lib.utils.helper import clean_state_dict, function_mAP, get_raw_dict, ModelEma, add_weight_decay
-from lib.utils.losses import AsymmetricLoss, TwoWayLoss_class_mine, ASL_UL, WeightedASL_UL, ASL_UL_weight
+from lib.utils.losses import AsymmetricLoss, TwoWayLoss_class_mine, ASL_UL, ASL_UL_weight
 from sklearn import metrics
 
 from lib.ML_decoder.backbone.ML_decoder import ClasswiseModel
@@ -25,7 +26,7 @@ from torch.utils.data import Subset, random_split, ConcatDataset
 from lib.utils.helper_DiCaP import save_data_in_train, smooth_for_voc, smooth_for_large_dataset
 
 
-NUM_CLASS = {'voc': 20, 'coco': 80, 'nus': 81, 'awa': 85}
+NUM_CLASS = {'voc': 20, 'coco': 80, 'nus': 81, 'awa': 85, 'cxr': 40, 'cxr_tail_lb': 40, 'cxr_hybrid_lb': 40}
 # os.environ["CUDA_VISIBLE_DEVICES"] = '0'
 def str2bool(input):
     if isinstance(input, bool):
@@ -43,7 +44,7 @@ def parser_args():
     parser = argparse.ArgumentParser(description='Main')
 
     # data
-    parser.add_argument('--dataset_name', default='voc', choices=['voc', 'coco', 'nus', 'awa'], 
+    parser.add_argument('--dataset_name', default='voc', choices=['voc', 'coco', 'nus', 'awa', 'cxr', 'cxr_tail_lb', 'cxr_hybrid_lb'],
                         help='dataset name')
     parser.add_argument('--dataset_dir',  default='./data', metavar='DIR', 
                         help='dir of all datasets')
@@ -63,6 +64,8 @@ def parser_args():
                         help='number of data loading workers (default: 8)')
     parser.add_argument('--epochs', default=40, type=int, metavar='N',
                         help='number of total epochs to run')
+    parser.add_argument('--main_epochs', default=0, type=int, metavar='N',
+                        help='if > 0, run exactly this many main-phase epochs after warmup (overrides --epochs)')
     parser.add_argument('--start_epoch', default=0, type=int, metavar='N',
                         help='manual epoch number (useful on restarts)')
     parser.add_argument('-b', '--warmup_batch_size', default=32, type=int,
@@ -81,9 +84,11 @@ def parser_args():
                         help='optimizer used')
     parser.add_argument('--warmup_epochs', default=12, type=int,
                         help='the number of epochs for warmup')
-    parser.add_argument('--loss_lb', default='asl', type=str, 
+    parser.add_argument('--loss_lb', default='asl', type=str,
                         help='used_loss for lb')
-    parser.add_argument('--loss_ub', default='asl', type=str, 
+    parser.add_argument('--class_weight_gamma', default=0.0, type=float,
+                        help='exponent for inverse-frequency class weighting (0=off, 0.5=sqrt, 1.0=full)')
+    parser.add_argument('--loss_ub', default='asl', type=str,
                         help='used_loss for ub')
     parser.add_argument('--cat_strategy', default='f1', type=str, 
                         help='')
@@ -94,6 +99,8 @@ def parser_args():
     # random seed
     parser.add_argument('--seed', default=1, type=int,
                         help='seed for initializing training. ')
+    parser.add_argument('--split_seed', default=1, type=int,
+                        help='seed for train/val split. ')
 
     # model
     parser.add_argument('--net', default='resnet50', type=str,
@@ -114,11 +121,12 @@ def parser_args():
     parser.add_argument('--neg_threshold_target', type=float, default=0.01, help='the target ratio of negative samples for thresholding (default: 0.001)')
 
     parser.add_argument('--method', default='test', help='method')
-
+    parser.add_argument('--ub_epoch_size', default=0, type=int,
+                        help='max unlabeled samples per epoch (0 = use full pool)')
 
     args = parser.parse_args()
     
-    if args.lb_ratio <= 0.05:
+    if args.lb_ratio < 0.1:
         args.lb_bs = 4
         args.ub_bs = 60
     elif args.lb_ratio == 0.1:
@@ -130,6 +138,9 @@ def parser_args():
     elif args.lb_ratio == 0.2:
         args.lb_bs = 16
         args.ub_bs = 48
+    elif args.lb_ratio >= 0.5:
+        args.lb_bs = 64
+        args.ub_bs = 32
 
     if args.dataset_name == 'voc':
         args.lb_bs = int(args.lb_bs / 2)
@@ -137,12 +148,12 @@ def parser_args():
 
     
     args.output = './output/' + args.output
-    args.resume = '%s/%s/%s/warmup_%s_%s/warmup_model.pth.tar'%(args.output, args.dataset_name, args.lb_ratio, args.loss_lb, args.warmup_epochs)
-    
+    args.resume = '%s/%s/%s/%s/warmup_%s_%s/warmup_model.pth.tar'%(args.output, args.dataset_name, args.net, args.lb_ratio, args.loss_lb, args.warmup_epochs)
+
     args.n_classes = NUM_CLASS[args.dataset_name]
-    args.dataset_dir = os.path.join(args.dataset_dir, args.dataset_name) 
-    
-    args.output = os.path.join(args.output, args.dataset_name,  '%s'%args.lb_ratio,  '%s'%args.method)
+    args.dataset_dir = os.path.join(args.dataset_dir, args.dataset_name)
+
+    args.output = os.path.join(args.output, args.dataset_name, args.net, '%s'%args.lb_ratio, '%s'%args.method)
 
     return args
 
@@ -180,19 +191,38 @@ def main_worker(args, logger):
 
     # Data loading code
     lb_train_dataset, ub_train_dataset, val_dataset = get_datasets(args)
-    print("len(lb_train_dataset):", len(lb_train_dataset)) 
+    print("len(lb_train_dataset):", len(lb_train_dataset))
     print("len(ub_train_dataset):", len(ub_train_dataset))
     print("len(val_dataset):", len(val_dataset))
 
+    if args.class_weight_gamma > 0:
+        lb_labels = np.load(os.path.join(args.dataset_dir, 'formatted_train_labels.npy'))
+        freq = lb_labels.sum(0).clip(min=1).astype(np.float32)
+        class_weights = torch.from_numpy((freq.max() / freq) ** args.class_weight_gamma).cuda()
+        print(f'[class_weights] gamma={args.class_weight_gamma}, min={class_weights.min():.2f}, max={class_weights.max():.2f}')
+    else:
+        class_weights = None
 
-    total_len = len(lb_train_dataset)
-    split_ratio = args.percent  # 80% for superviced，20% for estimation
-    train_len = int(total_len * split_ratio)
-    valid_len = total_len - train_len
-    lb_train_dataset_train, lb_train_dataset_valid = random_split(
-        lb_train_dataset, [train_len, valid_len],
-        generator=torch.Generator().manual_seed(args.split_seed)
-    )
+
+    split_ratio = args.percent  # kept for lb batch size calculation
+    calib_path = os.path.join(args.dataset_dir, 'formatted_calib_images.npy')
+    if os.path.exists(calib_path):
+        calib_imgs   = np.load(calib_path, allow_pickle=True)
+        calib_labels = np.load(os.path.join(args.dataset_dir, 'formatted_calib_labels.npy'))
+        data_handler = HANDLER_DICT[args.dataset_name]
+        lb_train_dataset_train = lb_train_dataset
+        lb_train_dataset_valid = data_handler(
+            calib_imgs, calib_labels, args.dataset_dir,
+            transform=TransformWithPatches_Train(args))
+        print(f'[hybrid-split] supervised={len(lb_train_dataset_train)}, calib={len(lb_train_dataset_valid)}')
+    else:
+        total_len = len(lb_train_dataset)
+        train_len = int(total_len * split_ratio)
+        valid_len = total_len - train_len
+        lb_train_dataset_train, lb_train_dataset_valid = random_split(
+            lb_train_dataset, [train_len, valid_len],
+            generator=torch.Generator().manual_seed(args.split_seed)
+        )
 
     # unsupervised set
     combined_unlabeled_dataset = ConcatDataset([lb_train_dataset_valid, ub_train_dataset])
@@ -209,9 +239,19 @@ def main_worker(args, logger):
         num_workers=args.workers, pin_memory=False)
 
     # unsupervised set
-    ub_train_loader = torch.utils.data.DataLoader(
-        combined_unlabeled_dataset, batch_size=args.ub_bs, shuffle=True,
-        num_workers=args.workers, pin_memory=False)
+    ub_pool_size = len(combined_unlabeled_dataset)
+    if args.ub_epoch_size > 0 and args.ub_epoch_size < ub_pool_size:
+        ub_sampler = torch.utils.data.RandomSampler(
+            combined_unlabeled_dataset, replacement=False, num_samples=args.ub_epoch_size)
+        ub_train_loader = torch.utils.data.DataLoader(
+            combined_unlabeled_dataset, batch_size=args.ub_bs, sampler=ub_sampler,
+            num_workers=args.workers, pin_memory=False)
+        print(f'[ub_epoch_size] capping unlabeled pool to {args.ub_epoch_size}/{ub_pool_size} per epoch '
+              f'({args.ub_epoch_size/args.ub_bs:.0f} steps/epoch)')
+    else:
+        ub_train_loader = torch.utils.data.DataLoader(
+            combined_unlabeled_dataset, batch_size=args.ub_bs, shuffle=True,
+            num_workers=args.workers, pin_memory=False)
 
     val_loader = torch.utils.data.DataLoader(
         val_dataset, batch_size=64, shuffle=False,
@@ -226,7 +266,9 @@ def main_worker(args, logger):
             logger.info("=> loading checkpoint '{}'".format(args.resume))
             checkpoint = torch.load(os.path.join(args.resume))
 
-            args.start_epoch = checkpoint['epoch']+1
+            args.start_epoch = checkpoint['epoch'] + 1
+            if args.main_epochs > 0:
+                args.epochs = args.start_epoch + args.main_epochs
             if 'state_dict' in checkpoint:
                 if checkpoint['regular_mAP'][-1] > checkpoint['ema_mAP'][-1]:
                     state_dict = clean_state_dict(checkpoint['state_dict'])
@@ -316,7 +358,7 @@ def main_worker(args, logger):
         weight = update_weight(lb_train_dataset_valid, ema_m.module, args, logger)
 
 
-        loss = train(lb_train_loader, ub_train_loader, model, ema_m, optimizer, scheduler, epoch, args, logger, criterion_lb, criterion_ub, weight, threshold0, threshold1)    
+        loss = train(lb_train_loader, ub_train_loader, model, ema_m, optimizer, scheduler, epoch, args, logger, criterion_lb, criterion_ub, weight, threshold0, threshold1, class_weights)
 
         threshold0, threshold1 = dynamic_threshold_generate(lb_train_dataset, ema_m.module, threshold0, threshold1, args)
 
@@ -423,7 +465,7 @@ def save_checkpoint(state, is_best, filename='checkpoint.pth.tar'):
         torch.save(state, filename)
 
 
-def train(lb_train_loader, ub_train_loader, model, ema_m, optimizer, scheduler, epoch, args, logger, criterion_lb, criterion_ub, weight, threshold0, threshold1):
+def train(lb_train_loader, ub_train_loader, model, ema_m, optimizer, scheduler, epoch, args, logger, criterion_lb, criterion_ub, weight, threshold0, threshold1, class_weights=None):
 
 
     global_weight_matrix = weight['global_weight_matrix']  # [num_classes, num_bins]
@@ -526,7 +568,10 @@ def train(lb_train_loader, ub_train_loader, model, ema_m, optimizer, scheduler, 
 
         feature_s = feature_s_all[n_lb_ori:]
 
-        Lx_ori = criterion_lb(logits_lb_ori, labels_lb).sum()
+        loss_mat = criterion_lb(logits_lb_ori, labels_lb)
+        if class_weights is not None:
+            loss_mat = loss_mat * class_weights
+        Lx_ori = loss_mat.sum()
         Lu_ori = criterion_ub(logits_ub_ori, pseudo_labels_ub, sample_weights).sum()
         
         if(pseudo_labels_ub == 0).sum() > 0:
@@ -736,9 +781,11 @@ def dynamic_threshold_generate(lb_train_dataset, model, threshold0, threshold1, 
 
     for i in range(args.n_classes):
         outputs0_new = pred0[:, i][torch.nonzero(pred0[:, i])].view(-1) # Presence
-        outputs1_new = pred1[:, i][torch.nonzero(pred1[:, i])].view(-1) # Absence  
-        threshold1[i] = 0.5 * (outputs0_new.min() + outputs0_new.max()) 
-        threshold0[i] = 0.5 * (outputs1_new.min() + outputs1_new.max()) 
+        outputs1_new = pred1[:, i][torch.nonzero(pred1[:, i])].view(-1) # Absence
+        if len(outputs0_new) > 0:
+            threshold1[i] = 0.5 * (outputs0_new.min() + outputs0_new.max())
+        if len(outputs1_new) > 0:
+            threshold0[i] = 0.5 * (outputs1_new.min() + outputs1_new.max())
 
     return threshold0, threshold1
 

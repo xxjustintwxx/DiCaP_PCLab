@@ -3,7 +3,7 @@ import os, sys
 import time
 import random
 import json
-# import numpy as np
+import numpy as np
 
 import torch
 from torch.optim import lr_scheduler
@@ -11,7 +11,7 @@ import torch.optim
 import torch.utils.data
 
 import _init_paths
-from lib.dataset.get_dataset import get_datasets
+from lib.dataset.get_dataset import get_datasets, HANDLER_DICT, TransformWithPatches_Train
 
 
 from lib.utils.logger import setup_logger
@@ -24,7 +24,7 @@ from torch.utils.data import Subset, random_split, ConcatDataset
 
 from lib.ML_decoder.loss_UCL import unsupervised_contrastive_loss
 
-NUM_CLASS = {'voc': 20, 'coco': 80, 'nus': 81, 'awa': 85}
+NUM_CLASS = {'voc': 20, 'coco': 80, 'nus': 81, 'awa': 85, 'cxr': 40, 'cxr_tail_lb': 40, 'cxr_hybrid_lb': 40}
 # os.environ["CUDA_VISIBLE_DEVICES"] = '7'
 
 
@@ -43,7 +43,7 @@ def parser_args():
     parser = argparse.ArgumentParser(description='Pretain Warmup Stage')
 
     # data
-    parser.add_argument('--dataset_name', default='voc', choices=['voc', 'coco', 'nus', 'awa'], 
+    parser.add_argument('--dataset_name', default='voc', choices=['voc', 'coco', 'nus', 'awa', 'cxr', 'cxr_tail_lb', 'cxr_hybrid_lb'],
                         help='dataset name')
     parser.add_argument('--dataset_dir',  default='./data', metavar='DIR', 
                         help='dir of all datasets')
@@ -83,7 +83,8 @@ def parser_args():
                         help='the number of epochs for warmup')
     parser.add_argument('--loss_lb', default='asl', type=str,
                         help='used loss')
-    
+    parser.add_argument('--class_weight_gamma', default=0.0, type=float,
+                        help='exponent for inverse-frequency class weighting (0=off, 0.5=sqrt, 1.0=full)')
 
     # random seed
     parser.add_argument('--seed', default=1, type=int,
@@ -116,14 +117,16 @@ def parser_args():
         args.warmup_batch_size = 48
     elif args.lb_ratio == 0.2:
         args.warmup_batch_size = 64
+    elif args.lb_ratio >= 0.5:
+        args.warmup_batch_size = 128
 
-    args.ub_bs = 128 - args.warmup_batch_size
+    args.ub_bs = max(32, 128 - args.warmup_batch_size)
 
     args.output = './output/' + args.output
     args.n_classes = NUM_CLASS[args.dataset_name]
     args.dataset_dir = os.path.join(args.dataset_dir, args.dataset_name) 
     
-    args.output = os.path.join(args.output, args.dataset_name,  '%s'%args.lb_ratio, 'warmup_%s_%s'%(args.loss_lb, args.warmup_epochs))
+    args.output = os.path.join(args.output, args.dataset_name, args.net, '%s'%args.lb_ratio, 'warmup_%s_%s'%(args.loss_lb, args.warmup_epochs))
 
     return args
 
@@ -161,18 +164,38 @@ def main_worker(args, logger):
 
     # Data loading code
     lb_train_dataset, ub_train_dataset, val_dataset = get_datasets(args)
-    print("len(lb_train_dataset):", len(lb_train_dataset)) 
+
+    if args.class_weight_gamma > 0:
+        lb_labels = np.load(os.path.join(args.dataset_dir, 'formatted_train_labels.npy'))
+        freq = lb_labels.sum(0).clip(min=1).astype(np.float32)
+        class_weights = torch.from_numpy((freq.max() / freq) ** args.class_weight_gamma).cuda()
+        print(f'[class_weights] gamma={args.class_weight_gamma}, min={class_weights.min():.2f}, max={class_weights.max():.2f}')
+    else:
+        class_weights = None
+
+    print("len(lb_train_dataset):", len(lb_train_dataset))
     print("len(ub_train_dataset):", len(ub_train_dataset))
     print("len(val_dataset):", len(val_dataset))
 
-    total_len = len(lb_train_dataset)
-    split_ratio = args.percent  # 80% for superviced，20% for estimation
-    train_len = int(total_len * split_ratio)
-    valid_len = total_len - train_len
-    lb_train_dataset_train, lb_train_dataset_valid = random_split(
-        lb_train_dataset, [train_len, valid_len],
-        generator=torch.Generator().manual_seed(args.split_seed)
-    )
+    split_ratio = args.percent  # kept for lb batch size calculation
+    calib_path = os.path.join(args.dataset_dir, 'formatted_calib_images.npy')
+    if os.path.exists(calib_path):
+        calib_imgs   = np.load(calib_path, allow_pickle=True)
+        calib_labels = np.load(os.path.join(args.dataset_dir, 'formatted_calib_labels.npy'))
+        data_handler = HANDLER_DICT[args.dataset_name]
+        lb_train_dataset_train = lb_train_dataset
+        lb_train_dataset_valid = data_handler(
+            calib_imgs, calib_labels, args.dataset_dir,
+            transform=TransformWithPatches_Train(args))
+        print(f'[hybrid-split] supervised={len(lb_train_dataset_train)}, calib={len(lb_train_dataset_valid)}')
+    else:
+        total_len = len(lb_train_dataset)
+        train_len = int(total_len * split_ratio)
+        valid_len = total_len - train_len
+        lb_train_dataset_train, lb_train_dataset_valid = random_split(
+            lb_train_dataset, [train_len, valid_len],
+            generator=torch.Generator().manual_seed(args.split_seed)
+        )
 
     # unsupervised set
     combined_unlabeled_dataset = ConcatDataset([lb_train_dataset_valid, ub_train_dataset])
@@ -250,7 +273,7 @@ def main_worker(args, logger):
         torch.cuda.empty_cache()
 
         # train for one epoch
-        loss = train(lb_train_loader, ub_train_loader, model, ema_m, optimizer, scheduler, epoch, args, logger, criterion)
+        loss = train(lb_train_loader, ub_train_loader, model, ema_m, optimizer, scheduler, epoch, args, logger, criterion, class_weights)
 
         if summary_writer:
             # tensorboard logger
@@ -311,7 +334,7 @@ def main_worker(args, logger):
             'best_regular_mAP': best_regular_mAP,
             'best_ema_mAP': best_ema_mAP,
             'optimizer' : optimizer.state_dict(),
-        }, is_best=True, filename=os.path.join(args.output, 'warmup_model.pth.tar'))
+        }, is_best=is_best, filename=os.path.join(args.output, 'warmup_model.pth.tar'))
 
         if args.early_stop:
             if best_epoch >= 0 and epoch - max(best_epoch, best_regular_epoch) > 4:
@@ -356,7 +379,7 @@ def joint_patch_logits(batch_size, logits_pat, args):
     return logits_joint
 
 
-def train(lb_train_loader, ub_train_loader, model, ema_m, optimizer, scheduler, epoch, args, logger, criterion):
+def train(lb_train_loader, ub_train_loader, model, ema_m, optimizer, scheduler, epoch, args, logger, criterion, class_weights=None):
     scaler = torch.cuda.amp.GradScaler(enabled=args.amp)
     
     loss_lb_ori = AverageMeter('L_lb_ori', ':5.3f')
@@ -422,7 +445,10 @@ def train(lb_train_loader, ub_train_loader, model, ema_m, optimizer, scheduler, 
         logits_lb_ori = outputs_ori[:n_lb_ori]
 
         loss_ucl = UCL(feature_w, feature)
-        Lx_ori = criterion(logits_lb_ori, labels_lb).sum()
+        loss_mat = criterion(logits_lb_ori, labels_lb)
+        if class_weights is not None:
+            loss_mat = loss_mat * class_weights
+        Lx_ori = loss_mat.sum()
 
         loss = Lx_ori + 0.1 * loss_ucl
 

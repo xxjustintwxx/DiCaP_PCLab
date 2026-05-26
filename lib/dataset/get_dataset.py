@@ -5,7 +5,7 @@ import torch
 from randaugment import RandAugment
 import torchvision.transforms as transforms
 from PIL import ImageDraw
-from dataset.handlers import COCO2014_handler, VOC2012_handler, NUS_WIDE_handler, AWA_handler
+from dataset.handlers import COCO2014_handler, VOC2012_handler, NUS_WIDE_handler, AWA_handler, CXR_handler
 import numpy as np
 
 
@@ -13,7 +13,10 @@ HANDLER_DICT = {
     'voc': VOC2012_handler,
     'coco': COCO2014_handler,
     'nus': NUS_WIDE_handler,
-    'awa': AWA_handler
+    'awa': AWA_handler,
+    'cxr': CXR_handler,
+    'cxr_tail_lb': CXR_handler,
+    'cxr_hybrid_lb': CXR_handler,
 }
 
 def get_datasets(args):
@@ -27,27 +30,29 @@ def get_datasets(args):
     
     source_data = load_data(args.dataset_dir)
 
-    train_labels = source_data['train']['labels']
-    n_train = len(train_labels)
-    n_lb = int(args.lb_ratio*n_train)
-    indices = torch.randperm(n_train).tolist()
-    lb_idxs = indices[:n_lb]
-    ub_idxs = indices[n_lb:]
-
-    print(n_train, len(lb_idxs), len(ub_idxs))
-
-    lb_train_imgs, lb_train_labels = source_data['train']['images'][lb_idxs], source_data['train']['labels'][lb_idxs]
-    ub_train_imgs, ub_train_labels = source_data['train']['images'][ub_idxs], source_data['train']['labels'][ub_idxs]
+    unlabeled_path = os.path.join(args.dataset_dir, 'formatted_unlabeled_images.npy')
+    if os.path.exists(unlabeled_path):
+        # Pre-split mode: formatted_train_* = labeled set, formatted_unlabeled_* = unlabeled set
+        lb_train_imgs   = source_data['train']['images']
+        lb_train_labels = source_data['train']['labels']
+        ub_train_imgs   = np.load(unlabeled_path, allow_pickle=True)
+        ub_train_labels = np.load(os.path.join(args.dataset_dir, 'formatted_unlabeled_labels.npy'))
+        print(f'[pre-split mode] labeled={len(lb_train_imgs)}, unlabeled={len(ub_train_imgs)}')
+    else:
+        # Original lb_ratio split (random)
+        n_train = len(source_data['train']['labels'])
+        n_lb = int(args.lb_ratio * n_train)
+        indices = torch.randperm(n_train).tolist()
+        lb_idxs = indices[:n_lb]
+        ub_idxs = indices[n_lb:]
+        print(n_train, len(lb_idxs), len(ub_idxs))
+        lb_train_imgs   = source_data['train']['images'][lb_idxs]
+        lb_train_labels = source_data['train']['labels'][lb_idxs]
+        ub_train_imgs   = source_data['train']['images'][ub_idxs]
+        ub_train_labels = source_data['train']['labels'][ub_idxs]
 
     data_handler = HANDLER_DICT[args.dataset_name]
-    if args.dataset_name == 'coco':
-        dataset_dir = '/nas/datasets/coco2014'
-    elif args.dataset_name == 'voc':
-        dataset_dir = '/nas/datasets/voc2012'
-    elif args.dataset_name == 'nus':
-        dataset_dir = '/nas/datasets/nuswide'
-    elif args.dataset_name == 'awa':
-        dataset_dir = '/nas/datasets/AwA/Animals_with_Attributes2'
+    dataset_dir = args.dataset_dir
 
 
     lb_train_dataset = data_handler(lb_train_imgs, lb_train_labels, dataset_dir, transform=train_transform)

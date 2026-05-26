@@ -77,13 +77,12 @@ class ClasswiseEncoder(nn.Module):
 
     def __init__(self, num_classes, dim_feature, dim_embed):
         super().__init__()
-        layer_decode = TransformerDecoderLayerWithoutSelfAttn(
-            d_model=dim_embed, dim_feedforward=dim_embed * 4, dropout=0.1, nhead=8, batch_first=True
-        )
         self.querys = nn.Embedding(num_embeddings=num_classes, embedding_dim=dim_embed)
         self.feature_projector = nn.Linear(dim_feature, dim_embed)
         self.query_projector = nn.Linear(dim_embed, dim_embed)
-        self.decoder = nn.TransformerDecoder(layer_decode, num_layers=1)
+        self.decoder = TransformerDecoderLayerWithoutSelfAttn(
+            d_model=dim_embed, dim_feedforward=dim_embed * 4, dropout=0.1, nhead=8, batch_first=True
+        )
 
         self.querys.requires_grad_(False)
 

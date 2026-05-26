@@ -4,18 +4,19 @@ import time
 import random
 import json
 
+import numpy as np
 import torch
 from torch.optim import lr_scheduler
 import torch.optim
 import torch.utils.data
 
 import _init_paths
-from lib.dataset.get_dataset import get_datasets
+from lib.dataset.get_dataset import get_datasets, HANDLER_DICT, TransformWithPatches_Train
 
 from lib.utils.logger import setup_logger
 from lib.utils.meter import AverageMeter, AverageMeterHMS, ProgressMeter
 from lib.utils.helper import clean_state_dict, function_mAP, get_raw_dict, ModelEma, add_weight_decay
-from lib.utils.losses import AsymmetricLoss, TwoWayLoss_class_mine, ASL_UL, WeightedASL_UL, ASL_UL_weight
+from lib.utils.losses import AsymmetricLoss, TwoWayLoss_class_mine, ASL_UL, ASL_UL_weight
 from sklearn import metrics
 
 from lib.ML_decoder.backbone.ML_decoder import ClasswiseModel
@@ -23,7 +24,7 @@ from torch.utils.data import Subset, random_split, ConcatDataset
 from lib.utils.helper_DiCaP import save_data_in_train, smooth_for_voc, smooth_for_large_dataset
 
 
-NUM_CLASS = {'voc': 20, 'coco': 80, 'nus': 81, 'awa':85}
+NUM_CLASS = {'voc': 20, 'coco': 80, 'nus': 81, 'awa': 85, 'cxr': 40, 'cxr_tail_lb': 40, 'cxr_hybrid_lb': 40}
 # os.environ["CUDA_VISIBLE_DEVICES"] = '0'
 def str2bool(input):
     if isinstance(input, bool):
@@ -41,7 +42,7 @@ def parser_args():
     parser = argparse.ArgumentParser(description='Main')
 
     # data
-    parser.add_argument('--dataset_name', default='coco', choices=['voc', 'coco', 'nus', 'awa'], 
+    parser.add_argument('--dataset_name', default='coco', choices=['voc', 'coco', 'nus', 'awa', 'cxr', 'cxr_tail_lb', 'cxr_hybrid_lb'], 
                         help='dataset name')
     parser.add_argument('--dataset_dir',  default='./data', metavar='DIR', 
                         help='dir of all datasets')
@@ -79,9 +80,11 @@ def parser_args():
                         help='optimizer used')
     parser.add_argument('--warmup_epochs', default=12, type=int,
                         help='the number of epochs for warmup')
-    parser.add_argument('--loss_lb', default='asl', type=str, 
+    parser.add_argument('--loss_lb', default='asl', type=str,
                         help='used_loss for lb')
-    parser.add_argument('--loss_ub', default='asl', type=str, 
+    parser.add_argument('--class_weight_gamma', default=0.0, type=float,
+                        help='exponent for inverse-frequency class weighting (0=off, 0.5=sqrt, 1.0=full)')
+    parser.add_argument('--loss_ub', default='asl', type=str,
                         help='used_loss for ub')
     parser.add_argument('--cat_strategy', default='f1', type=str, 
                         help='')
@@ -92,6 +95,8 @@ def parser_args():
     # random seed
     parser.add_argument('--seed', default=1, type=int,
                         help='seed for initializing training. ')
+    parser.add_argument('--split_seed', default=1, type=int,
+                        help='seed for train/val split. ')
 
     # model
     parser.add_argument('--net', default='resnet50', type=str,
@@ -131,12 +136,12 @@ def parser_args():
         args.ub_bs = int(args.ub_bs / 2)
 
     args.output = './output/' + args.output
-    args.resume = '%s/%s/%s/%s/best_model.pth.tar'%(args.output, args.dataset_name, args.lb_ratio, args.method)
+    args.resume = '%s/%s/%s/%s/%s/best_model.pth.tar'%(args.output, args.dataset_name, args.net, args.lb_ratio, args.method)
 
     args.n_classes = NUM_CLASS[args.dataset_name]
-    args.dataset_dir = os.path.join(args.dataset_dir, args.dataset_name) 
-    
-    args.output = os.path.join(args.output, args.dataset_name,  '%s'%args.lb_ratio,  '%s'%args.FT_method)
+    args.dataset_dir = os.path.join(args.dataset_dir, args.dataset_name)
+
+    args.output = os.path.join(args.output, args.dataset_name, args.net, '%s'%args.lb_ratio, '%s'%args.FT_method)
 
     return args
 
@@ -174,19 +179,37 @@ def main_worker(args, logger):
 
     # Data loading code
     lb_train_dataset, ub_train_dataset, val_dataset = get_datasets(args)
-    print("len(lb_train_dataset):", len(lb_train_dataset)) 
+    print("len(lb_train_dataset):", len(lb_train_dataset))
     print("len(ub_train_dataset):", len(ub_train_dataset))
     print("len(val_dataset):", len(val_dataset))
 
- 
-    total_len = len(lb_train_dataset)
-    split_ratio = args.percent  # 80% for superviced，20% for estimation
-    train_len = int(total_len * split_ratio)
-    valid_len = total_len - train_len
-    lb_train_dataset_train, lb_train_dataset_valid = random_split(
-        lb_train_dataset, [train_len, valid_len],
-        generator=torch.Generator().manual_seed(args.split_seed)
-    )
+    if args.class_weight_gamma > 0:
+        lb_labels = np.load(os.path.join(args.dataset_dir, 'formatted_train_labels.npy'))
+        freq = lb_labels.sum(0).clip(min=1).astype(np.float32)
+        class_weights = torch.from_numpy((freq.max() / freq) ** args.class_weight_gamma).cuda()
+        print(f'[class_weights] gamma={args.class_weight_gamma}, min={class_weights.min():.2f}, max={class_weights.max():.2f}')
+    else:
+        class_weights = None
+
+    split_ratio = args.percent  # kept for lb batch size calculation
+    calib_path = os.path.join(args.dataset_dir, 'formatted_calib_images.npy')
+    if os.path.exists(calib_path):
+        calib_imgs   = np.load(calib_path, allow_pickle=True)
+        calib_labels = np.load(os.path.join(args.dataset_dir, 'formatted_calib_labels.npy'))
+        data_handler = HANDLER_DICT[args.dataset_name]
+        lb_train_dataset_train = lb_train_dataset
+        lb_train_dataset_valid = data_handler(
+            calib_imgs, calib_labels, args.dataset_dir,
+            transform=TransformWithPatches_Train(args))
+        print(f'[hybrid-split] supervised={len(lb_train_dataset_train)}, calib={len(lb_train_dataset_valid)}')
+    else:
+        total_len = len(lb_train_dataset)
+        train_len = int(total_len * split_ratio)
+        valid_len = total_len - train_len
+        lb_train_dataset_train, lb_train_dataset_valid = random_split(
+            lb_train_dataset, [train_len, valid_len],
+            generator=torch.Generator().manual_seed(args.split_seed)
+        )
 
     # unsupervised set
     combined_unlabeled_dataset = ConcatDataset([lb_train_dataset_valid, ub_train_dataset])
@@ -301,7 +324,7 @@ def main_worker(args, logger):
         torch.cuda.empty_cache()
 
         # train for one epoch
-        loss = train(lb_valid_loader, model, ema_m, optimizer, scheduler, epoch, args, logger, criterion_lb)
+        loss = train(lb_valid_loader, model, ema_m, optimizer, scheduler, epoch, args, logger, criterion_lb, class_weights)
     
         if summary_writer:
             # tensorboard logger
@@ -405,7 +428,7 @@ def save_checkpoint(state, is_best, filename='checkpoint.pth.tar'):
         torch.save(state, filename)
 
 
-def train(lb_train_loader, model, ema_m, optimizer, scheduler, epoch, args, logger, criterion_lb):
+def train(lb_train_loader, model, ema_m, optimizer, scheduler, epoch, args, logger, criterion_lb, class_weights=None):
 
     scaler = torch.cuda.amp.GradScaler(enabled=args.amp)
     loss_lb_ori = AverageMeter('L_lb_ori', ':5.3f')
@@ -443,7 +466,10 @@ def train(lb_train_loader, model, ema_m, optimizer, scheduler, epoch, args, logg
         with torch.cuda.amp.autocast(enabled=args.amp):
             outputs_ori = model(inputs_s_lb_ori)
             
-        Lx_ori = criterion_lb(outputs_ori, labels_lb).sum()
+        loss_mat = criterion_lb(outputs_ori, labels_lb)
+        if class_weights is not None:
+            loss_mat = loss_mat * class_weights
+        Lx_ori = loss_mat.sum()
 
         loss = Lx_ori
 

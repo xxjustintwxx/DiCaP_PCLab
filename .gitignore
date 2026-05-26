@@ -1,0 +1,18 @@
+# Model checkpoints and all training outputs (too large for git)
+output/
+
+# Generated .npy files — recreate by running format_*.py scripts
+data/**/*.npy
+
+# VOC dataset files (downloaded separately)
+data/voc/VOCdevkit/
+
+# Python cache
+__pycache__/
+*.py[cod]
+*.pyo
+
+# Common OS / IDE files
+.DS_Store
+*.swp
+*.swo
