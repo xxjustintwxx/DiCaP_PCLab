@@ -1,6 +1,12 @@
 # Model checkpoints and all training outputs (too large for git)
 output/
 
+# Pretrained weights (downloaded separately, too large for git)
+pretrained/
+
+# CheXFound library (cloned separately — git submodule would be the right approach)
+lib/chexfound/
+
 # Generated .npy files — recreate by running format_*.py scripts
 data/**/*.npy
 

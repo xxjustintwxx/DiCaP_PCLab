@@ -1026,18 +1026,333 @@ tail-LB where SSL added +7.8 mAP. SSL is most impactful when the supervised base
 
 ---
 
+## Run: lb=1.0, ConvNeXt-Base, ASL loss
+
+**Date:** 2026-05-27
+**Checkpoint:** `output/cxr_ours/cxr/convnext_base/1.0/fine_tune/best_model.pth.tar`
+**Motivation:** Top CXR-LT 2024 teams used ConvNeXt backbones; ConvNeXt-Base with ImageNet-22K
+(`convnext_base.fb_in22k_ft_in1k`, 89M params) chosen as a like-for-like replacement for
+TResNet_L (55M params, ImageNet-1K).
+
+**Important: scheduler bug was still present during this run.** `fine_tune.py`'s OneCycleLR
+used `epochs=args.epochs=40` (the default) instead of `epochs=args.FT_epochs=20`, so the LR
+schedule completed only half its designed decay. Fine-tune ran 40 epochs (not 20). The bug
+was fixed before the hybrid run.
+
+### Overall Metrics
+
+| Metric | TResNet_L lb=1.0 | ConvNeXt-Base lb=1.0 | Δ |
+|--------|:---:|:---:|:---:|
+| Overall mAP | 22.01 | **21.99** | −0.02 |
+| Head mAP (>10%, 9 classes) | 54.00 | **54.14** | +0.14 |
+| Medium mAP (1–10%, 15 classes) | 16.27 | **16.65** | +0.38 |
+| Tail mAP (≤1%, 16 classes) | 9.40 | **8.92** | −0.48 |
+
+ConvNeXt-Base with ImageNet-22K pretraining is **statistically indistinguishable** from TResNet_L
+with ImageNet-1K pretraining. Head and medium improve marginally (+0.1, +0.4), tail drops slightly
+(−0.5). Both models are on the same test set (78,946 images from `test_labeled_task1.csv`).
+
+### Training Summary
+
+| Phase | Best mAP (EMA) | Best at epoch |
+|-------|---------------:|:---:|
+| Warmup (12 ep) | 22.15 | ep 6 |
+| Main SSL (40 ep) | 22.40 | ep 13 |
+| Fine-tune (40 ep, bug — should be 20) | 22.60 | ep 21 |
+| **Final eval (test)** | **21.99** | — |
+
+### Per-Class AP — ConvNeXt-Base vs TResNet_L (lb=1.0, test set)
+
+| Class | Train+Val # | Zone | TResNet_L AP | ConvNeXt AP | Δ |
+|---|---:|:---:|---:|---:|---:|
+| Support Devices | 99,240 | Head | 89.7 | **90.1** | +0.4 |
+| Lung Opacity | 89,213 | Head | 58.8 | **59.1** | +0.3 |
+| Cardiomegaly | 86,321 | Head | 65.3 | **65.3** | 0.0 |
+| Pleural Effusion | 76,831 | Head | 82.1 | **82.0** | −0.1 |
+| Atelectasis | 75,507 | Head | 59.1 | **59.3** | +0.2 |
+| Pneumonia | 53,721 | Head | 30.3 | **30.8** | +0.5 |
+| Edema | 43,202 | Head | 51.8 | **52.1** | +0.3 |
+| Normal | 39,380 | Head | 31.1 | **31.1** | 0.0 |
+| Enlarged Cardiomediastinum | 33,872 | Head | 17.9 | **17.5** | −0.4 |
+| Consolidation | 17,750 | Medium | 22.1 | **22.2** | +0.1 |
+| Pneumothorax | 16,200 | Medium | 45.4 | **46.6** | +1.2 |
+| Fracture | 13,144 | Medium | 17.5 | **18.9** | +1.4 |
+| Infiltration | 11,593 | Medium | 6.0 | **6.1** | +0.1 |
+| Rib Fracture | 10,169 | Medium | 12.8 | **13.1** | +0.3 |
+| Nodule | 8,650 | Medium | 11.3 | **12.3** | +1.0 |
+| Mass | 6,077 | Medium | 18.4 | **17.1** | −1.3 |
+| Calcification of the Aorta | 4,833 | Medium | 11.2 | **11.7** | +0.5 |
+| Hernia | 4,660 | Medium | 45.2 | **45.3** | +0.1 |
+| Emphysema | 4,402 | Medium | 19.8 | **19.9** | +0.1 |
+| Adenopathy | 3,886 | Medium | 8.0 | **7.8** | −0.2 |
+| Tortuous Aorta | 3,831 | Medium | 5.9 | **6.0** | +0.1 |
+| Pleural Thickening | 3,751 | Medium | 8.6 | **8.4** | −0.2 |
+| Granuloma | 3,348 | Medium | 3.5 | **5.9** | +2.4 |
+| Fissure | 3,154 | Medium | 8.1 | **8.6** | +0.5 |
+| Lung Lesion | 2,652 | Tail | 6.0 | **5.7** | −0.3 |
+| Subcutaneous Emphysema | 2,477 | Tail | 55.2 | **54.6** | −0.6 |
+| Tuberculosis | 2,455 | Tail | 5.7 | **5.1** | −0.6 |
+| Pulmonary Embolism | 1,935 | Tail | 1.2 | **1.1** | −0.1 |
+| Fibrosis | 1,332 | Tail | 9.6 | **10.3** | +0.7 |
+| Pulmonary Hypertension | 1,022 | Tail | 2.5 | **2.6** | +0.1 |
+| Kyphosis | 890 | Tail | 6.9 | **5.5** | −1.4 |
+| Pneumomediastinum | 826 | Tail | 23.0 | **22.6** | −0.4 |
+| Infarction | 823 | Tail | 0.7 | **0.6** | −0.1 |
+| Hydropneumothorax | 774 | Tail | 9.5 | **8.4** | −1.1 |
+| Pleural Other | 696 | Tail | 3.3 | **4.1** | +0.8 |
+| Pneumoperitoneum | 570 | Tail | 22.1 | **18.4** | −3.7 |
+| Azygos Lobe | 219 | Tail | 0.1 | **0.3** | +0.2 |
+| Round(ed) Atelectasis | 218 | Tail | 4.0 | **2.9** | −1.1 |
+| Clavicle Fracture | 187 | Tail | 0.4 | **0.3** | −0.1 |
+| Lobar Atelectasis | 155 | Tail | 0.3 | **0.3** | 0.0 |
+
+Per-class differences are within noise (±2 AP). No consistent winner — both backbones
+perform comparably on every zone.
+
+---
+
+## Run: Hybrid-LB + SSL, ConvNeXt-Base, ep40/20
+
+**Date:** 2026-05-28
+**Checkpoint:** `output/cxr_ours/cxr_hybrid_lb/convnext_base/40.0/fine_tune/best_model.pth.tar`
+**Note:** Scheduler bugs fixed before this run (OneCycleLR epoch counts corrected in main.py
+and fine_tune.py). Fine-tune correctly ran 20 epochs.
+
+### Overall Metrics — ConvNeXt vs TResNet_L (Hybrid-LB)
+
+| Metric | TResNet_L Hybrid | ConvNeXt Hybrid | Δ |
+|--------|:---:|:---:|:---:|
+| Overall mAP | 16.03 | **16.05** | +0.02 |
+| Head mAP (>10%, 9 classes) | 46.88 | **45.82** | −1.06 |
+| Medium mAP (1–10%, 15 classes) | 8.52 | **8.79** | +0.27 |
+| Tail mAP (≤1%, 16 classes) | 5.71 | **6.10** | +0.39 |
+
+The hybrid results are **essentially identical** to TResNet_L (0.02pp overall). The SSL
+pipeline — not the backbone — is the performance bottleneck.
+
+### Training Summary
+
+| Phase | Best mAP (EMA) | Best at epoch |
+|-------|---------------:|:---:|
+| Warmup (12 ep) | — | — |
+| Main SSL (40 ep) | — | — |
+| Fine-tune (20 ep) | — | — |
+| **Final eval (test)** | **16.05** | — |
+
+---
+
+## Backbone Swap Conclusion
+
+**Architecture is not the bottleneck. The SSL pipeline is.**
+
+ConvNeXt-Base with ImageNet-22K pretraining achieves 21.99% (lb=1.0) and 16.05% (hybrid),
+versus TResNet_L's 22.01% and 16.03%. The 0.02pp differences are indistinguishable from noise.
+
+**Why the results are equal:**
+1. Both backbones are ImageNet pretrained — similar domain gap from natural images to CXR
+2. Both use the same ClasswiseEncoder head, same SSL pseudo-label pipeline, same labeled data
+3. Pseudo-label quality is the ceiling: uncertain pseudo-labels for rare classes hurt equally
+   regardless of which backbone generates the features
+
+**The CXR-LT 2024 paper's insight:** top teams used ConvNeXt pretrained **on MIMIC-CXR**
+(domain-specific), not just ImageNet-22K. The architectural choice alone is insufficient —
+domain-specific initialization is the key differentiator.
+
+**Bugs fixed during this experiment cycle (2026-05-26 to 2026-05-28):**
+
+| File | Bug | Type |
+|------|-----|------|
+| `main.py` | OneCycleLR used `epochs=args.epochs=47` instead of `epochs=args.epochs-args.start_epoch=40` | Real (LR schedule incomplete) |
+| `fine_tune.py` | OneCycleLR used `epochs=args.epochs=40` instead of `epochs=args.FT_epochs=20` | Real (LR schedule incomplete) |
+| `warm_up.py` | ProgressMeter and ETA used `args.epochs=40` instead of `args.warmup_epochs=12` | Cosmetic |
+| `fine_tune.py` | ProgressMeter and ETA used `args.epochs` instead of correct FT epoch count | Cosmetic |
+
+The ConvNeXt lb=1.0 run was executed with the fine_tune scheduler bug still present (ran 40
+fine_tune epochs). The hybrid run used the corrected schedulers. Despite this difference,
+results are nearly identical — confirming the SSL pipeline, not training duration, is the limit.
+
+---
+
+## Run: lb=1.0, CheXFound (ViT-L/16), ASL loss
+
+**Date:** 2026-06-14
+**Checkpoint:** `output/cxr_ours/cxr/chexfound/1.0/fine_tune/best_model.pth.tar`
+**Backbone:** CheXFound ViT-Large/16 (307M params), DINOv2-pretrained on 1M+ chest X-rays
+**Key config:** lr=1e-5 (ViT-L requires 10× lower LR than ConvNeXt); batch=16; gradient checkpointing every other block (12 of 24)
+
+**First run failed (lr=1e-4):** warmup peaked at epoch 0, main peaked at epoch 1. OneCycleLR warming up to 1e-4 pushed the model off its pretrained minimum. Fixed by overriding to lr=1e-5 for `net == 'chexfound'` in warm_up.py / main.py / fine_tune.py.
+
+### Overall Metrics
+
+| Metric | ConvNeXt-Base lb=1.0 | CheXFound lb=1.0 | Δ |
+|--------|:---:|:---:|:---:|
+| Overall mAP | 21.99 | **23.07** | **+1.08** |
+| Head mAP (>10%, 9 classes) | 54.14 | **54.49** | +0.35 |
+| Medium mAP (1–10%, 15 classes) | 16.65 | **18.19** | **+1.54** |
+| Tail mAP (≤1%, 16 classes) | 8.92 | **9.98** | **+1.06** |
+
+CXR domain pretraining benefits medium and tail classes most — exactly where domain knowledge matters. Head classes already saturate with ImageNet pretraining.
+
+### Training Summary
+
+| Phase | Best mAP (EMA) | Best at epoch |
+|-------|---------------:|:---:|
+| Warmup (12 ep) | 22.89 | ep 3 |
+| Main SSL | 22.83 | ep 4 |
+| Fine-tune | 22.90 | ep 11 |
+| **Final eval (test)** | **23.07** | — |
+
+Healthy monotonic warmup curve (peaked at ep 3, not ep 0 as with lr=1e-4).
+
+### Per-Class AP — CheXFound vs ConvNeXt-Base (lb=1.0, test set)
+
+| Class | Train+Val # | Zone | ConvNeXt AP | CheXFound AP | Δ |
+|---|---:|:---:|---:|---:|---:|
+| Support Devices | 99,240 | Head | 90.1 | **89.0** | −1.1 |
+| Lung Opacity | 89,213 | Head | 59.1 | **59.3** | +0.2 |
+| Cardiomegaly | 86,321 | Head | 65.3 | **66.9** | +1.6 |
+| Pleural Effusion | 76,831 | Head | 82.0 | **82.3** | +0.3 |
+| Atelectasis | 75,507 | Head | 59.3 | **59.4** | +0.1 |
+| Pneumonia | 53,721 | Head | 30.8 | **31.5** | +0.7 |
+| Edema | 43,202 | Head | 52.1 | **52.4** | +0.3 |
+| Normal | 39,380 | Head | 31.1 | **31.7** | +0.6 |
+| Enlarged Cardiomediastinum | 33,872 | Head | 17.5 | **18.0** | +0.5 |
+| Consolidation | 17,750 | Medium | 22.2 | **23.6** | +1.4 |
+| Pneumothorax | 16,200 | Medium | **46.6** | 45.5 | −1.1 |
+| Fracture | 13,144 | Medium | 18.9 | **21.7** | +2.8 |
+| Infiltration | 11,593 | Medium | 6.1 | **6.1** | 0.0 |
+| Rib Fracture | 10,169 | Medium | 13.1 | **15.4** | +2.3 |
+| Nodule | 8,650 | Medium | **12.3** | 9.8 | −2.5 |
+| Mass | 6,077 | Medium | 17.1 | **23.4** | +6.3 |
+| Calcification of the Aorta | 4,833 | Medium | **11.7** | 11.1 | −0.6 |
+| Hernia | 4,660 | Medium | 45.3 | **53.0** | +7.7 |
+| Emphysema | 4,402 | Medium | 19.9 | **21.1** | +1.2 |
+| Adenopathy | 3,886 | Medium | 7.8 | **12.1** | +4.3 |
+| Tortuous Aorta | 3,831 | Medium | 6.0 | **6.7** | +0.7 |
+| Pleural Thickening | 3,751 | Medium | 8.4 | **10.0** | +1.6 |
+| Granuloma | 3,348 | Medium | **5.9** | 3.2 | −2.7 |
+| Fissure | 3,154 | Medium | 8.6 | **10.3** | +1.7 |
+| Lung Lesion | 2,652 | Tail | 5.7 | **6.1** | +0.4 |
+| Subcutaneous Emphysema | 2,477 | Tail | 54.6 | **55.6** | +1.0 |
+| Tuberculosis | 2,455 | Tail | 5.1 | **6.5** | +1.4 |
+| Pulmonary Embolism | 1,935 | Tail | **1.1** | 1.1 | 0.0 |
+| Fibrosis | 1,332 | Tail | **10.3** | 10.3 | 0.0 |
+| Pulmonary Hypertension | 1,022 | Tail | 2.6 | **3.6** | +1.0 |
+| Kyphosis | 890 | Tail | 5.5 | **8.7** | +3.2 |
+| Pneumomediastinum | 826 | Tail | **22.6** | 22.2 | −0.4 |
+| Infarction | 823 | Tail | 0.6 | **1.5** | +0.9 |
+| Hydropneumothorax | 774 | Tail | 8.4 | **8.9** | +0.5 |
+| Pleural Other | 696 | Tail | **4.1** | 4.0 | −0.1 |
+| Pneumoperitoneum | 570 | Tail | 18.4 | **21.3** | +2.9 |
+| Azygos Lobe | 219 | Tail | 0.3 | **5.5** | +5.2 |
+| Round(ed) Atelectasis | 218 | Tail | 2.9 | **3.5** | +0.6 |
+| Clavicle Fracture | 187 | Tail | 0.3 | **0.4** | +0.1 |
+| Lobar Atelectasis | 155 | Tail | **0.3** | 0.3 | 0.0 |
+
+Notable gains from CXR pretraining: Hernia (+7.7), Mass (+6.3), Azygos Lobe (+5.2), Adenopathy (+4.3), Kyphosis (+3.2), Pneumoperitoneum (+2.9). Minor regressions: Granuloma (−2.7), Nodule (−2.5), Support Devices (−1.1).
+
+### Architecture Notes
+
+- **Spatial output:** `get_intermediate_layers(x, n=1, reshape=True)` → `[B, 1024, 14, 14]` at 224×224; fully compatible with ClasswiseEncoder without code changes
+- **xFormers:** Attention disabled (`XFORMERS_AVAILABLE = False`) due to SM 12.0 (Blackwell) incompatibility; SwiGLUFFNFused retains xFormers path (required for weight shape)
+- **Memory:** 2.5 GB backbone at batch=16 with every-other-block gradient checkpointing
+- **LR lesson:** ViT-L pretrained weights are near a sharp minimum — lr=1e-4 (ConvNeXt default) destroys it within the first epoch. lr=1e-5 is required.
+
+---
+
+## Run: Hybrid-LB + SSL, CheXFound (ViT-L/16)
+
+**Date:** 2026-06-15
+**Checkpoint:** `output/cxr_ours/cxr_hybrid_lb/chexfound/40.0/fine_tune/best_model.pth.tar`
+**Script:** `script/run_hybrid_lb.sh`
+
+### Overall Metrics
+
+| Metric | ConvNeXt Hybrid | CheXFound Hybrid | Δ |
+|--------|:---:|:---:|:---:|
+| Overall mAP | 16.05 | **18.89** | **+2.84** |
+| Head mAP (>10%, 9 classes) | 45.82 | **49.13** | **+3.31** |
+| Medium mAP (1–10%, 15 classes) | 8.79 | **13.28** | **+4.49** |
+| Tail mAP (≤1%, 16 classes) | 6.10 | **7.13** | **+1.03** |
+
+CXR pretraining provides the largest boost on medium classes (+4.49) — SSL pseudo-labels for mid-frequency pathologies are far better calibrated when the backbone already understands CXR features. CheXFound hybrid also surpasses every ConvNeXt SSL run by a wide margin (best ConvNeXt SSL was 16.05%).
+
+### Training Summary
+
+| Phase | Best mAP (EMA) | Best at epoch |
+|-------|---------------:|:---:|
+| Warmup (12 ep) | 19.09 | ep 5 |
+| Main SSL | 18.87 | ep 6 |
+| Fine-tune | 19.59 | ep 15 |
+| **Final eval (test)** | **18.89** | — |
+
+### Per-Class AP — CheXFound Hybrid vs ConvNeXt Hybrid (test set)
+
+| Class | Train+Val # | Zone | ConvNeXt Hybrid AP | CheXFound Hybrid AP | Δ |
+|---|---:|:---:|---:|---:|---:|
+| Support Devices | 99,240 | Head | 83.3 | **86.1** | +2.8 |
+| Lung Opacity | 89,213 | Head | 48.3 | **55.1** | +6.8 |
+| Cardiomegaly | 86,321 | Head | 57.0 | **63.4** | +6.4 |
+| Pleural Effusion | 76,831 | Head | 76.8 | **79.6** | +2.8 |
+| Atelectasis | 75,507 | Head | 52.8 | **55.4** | +2.6 |
+| Pneumonia | 53,721 | Head | 22.3 | **25.9** | +3.6 |
+| Edema | 43,202 | Head | 43.1 | **47.0** | +3.9 |
+| Normal | 39,380 | Head | **24.8** | 15.8 | −9.0 |
+| Enlarged Cardiomediastinum | 33,872 | Head | 13.6 | **14.0** | +0.4 |
+| Consolidation | 17,750 | Medium | 14.2 | **18.1** | +3.9 |
+| Pneumothorax | 16,200 | Medium | 30.7 | **36.5** | +5.8 |
+| Fracture | 13,144 | Medium | 8.3 | **11.2** | +2.9 |
+| Infiltration | 11,593 | Medium | 5.1 | **5.1** | 0.0 |
+| Rib Fracture | 10,169 | Medium | 6.0 | **8.0** | +2.0 |
+| Nodule | 8,650 | Medium | 6.4 | **7.2** | +0.8 |
+| Mass | 6,077 | Medium | 7.3 | **18.9** | +11.6 |
+| Calcification of the Aorta | 4,833 | Medium | 6.9 | **7.1** | +0.2 |
+| Hernia | 4,660 | Medium | 13.5 | **47.2** | +33.7 |
+| Emphysema | 4,402 | Medium | 12.9 | **16.1** | +3.2 |
+| Adenopathy | 3,886 | Medium | 3.1 | **5.8** | +2.7 |
+| Tortuous Aorta | 3,831 | Medium | 4.1 | **5.3** | +1.2 |
+| Pleural Thickening | 3,751 | Medium | 4.9 | **7.5** | +2.6 |
+| Granuloma | 3,348 | Medium | 2.2 | **2.4** | +0.2 |
+| Fissure | 3,154 | Medium | 2.4 | **2.9** | +0.5 |
+| Lung Lesion | 2,652 | Tail | 2.3 | **3.7** | +1.4 |
+| Subcutaneous Emphysema | 2,477 | Tail | **43.9** | 55.0 | +11.1 |
+| Tuberculosis | 2,455 | Tail | 4.0 | **4.5** | +0.5 |
+| Pulmonary Embolism | 1,935 | Tail | 0.7 | **0.7** | 0.0 |
+| Fibrosis | 1,332 | Tail | 5.9 | **9.7** | +3.8 |
+| Pulmonary Hypertension | 1,022 | Tail | 1.6 | **2.5** | +0.9 |
+| Kyphosis | 890 | Tail | 6.1 | **6.8** | +0.7 |
+| Pneumomediastinum | 826 | Tail | 4.8 | **7.5** | +2.7 |
+| Infarction | 823 | Tail | 0.3 | **0.4** | +0.1 |
+| Hydropneumothorax | 774 | Tail | 5.1 | **5.9** | +0.8 |
+| Pleural Other | 696 | Tail | 1.4 | **1.8** | +0.4 |
+| Pneumoperitoneum | 570 | Tail | 13.1 | **12.6** | −0.5 |
+| Azygos Lobe | 219 | Tail | 0.1 | **0.2** | +0.1 |
+| Round(ed) Atelectasis | 218 | Tail | 1.8 | **2.4** | +0.6 |
+| Clavicle Fracture | 187 | Tail | 0.1 | **0.2** | +0.1 |
+| Lobar Atelectasis | 155 | Tail | **0.2** | 0.2 | 0.0 |
+
+Notable gains: Hernia (+33.7), Subcutaneous Emphysema (+11.1), Mass (+11.6), Pneumothorax (+5.8). One notable regression: Normal (−9.0) — the hybrid labeled set has fewer Normal images than a full lb=1.0 split, and the CheXFound backbone may be less calibrated for this class in the low-data SSL regime.
+
+CheXFound hybrid beats ConvNeXt hybrid on 36/40 classes, ties on 2, and trails on 2 (Normal −9.0, Pneumoperitoneum −0.5).
+
+---
+
 ## Master Comparison Table (All Runs, Test Set)
 
 | Configuration | Overall mAP | Head mAP | Medium mAP | Tail mAP | Notes |
 |---|:---:|:---:|:---:|:---:|---|
 | ResNet50, lb=0.05 | 14.76 | 47.27 | 7.11 | 3.64 | Supervised-only |
 | ResNet50, lb=1.0 | 21.34 | 53.58 | 15.72 | 8.47 | Supervised-only |
-| TResNet_L, lb=1.0 | **22.01** | **54.00** | **16.27** | **9.40** | Full labeled baseline |
+| TResNet_L, lb=1.0 | 22.01 | 54.00 | 16.27 | 9.40 | Full labeled baseline |
+| ConvNeXt-Base, lb=1.0 | 21.99 | 54.14 | 16.65 | 8.92 | ImageNet-22K; scheduler bug in FT |
+| **CheXFound, lb=1.0** | **23.07** | **54.49** | **18.19** | **9.98** | ViT-L, 1M+ CXR pretrain; lr=1e-5 |
 | Tail-LB (ep15/5) | 6.58 | 23.83 | 2.76 | 0.45 | No SSL, short epochs |
 | Tail-LB (ep40/20) | 7.69 | 28.29 | 2.95 | 0.54 | No SSL, SSL crashed |
 | **Tail-LB + SSL** | **15.46** | **45.63** | **7.97** | **5.50** | First working SSL run |
 | **lb=0.066 + SSL** | **15.26** | **47.94** | **7.67** | **3.99** | Random split, same budget as hybrid |
-| **Hybrid-LB + SSL** | **16.03** | **46.88** | **8.52** | **5.71** | Best split experiment |
+| **Hybrid-LB + SSL (TResNet_L)** | **16.03** | 46.88 | 8.52 | 5.71 | Best TResNet_L SSL |
+| **Hybrid-LB + SSL (ConvNeXt-Base)** | **16.05** | 45.82 | **8.79** | **6.10** | Best ConvNeXt SSL; fixed schedulers |
+| **Hybrid-LB + SSL (CheXFound)** | **18.89** | **49.13** | **13.28** | **7.13** | ViT-L, 1M+ CXR pretrain; best SSL run |
 
 **Key takeaways:**
 1. The SSL phase provides a massive boost (+7.8 mAP for tail-LB) once the bug was fixed.
@@ -1048,18 +1363,40 @@ tail-LB where SSL added +7.8 mAP. SSL is most impactful when the supervised base
    primarily from the smaller and more restricted labeled set rather than the split design.
 5. The 4 ultra-rare classes (Azygos Lobe, Clavicle Fracture, Lobar Atelectasis, Infarction)
    remain near zero regardless of configuration — structural limit with <200 train positives.
+6. **ConvNeXt-Base (ImageNet-22K) ≈ TResNet_L (ImageNet-1K) in every experiment.** Architecture
+   swap alone does not help. Domain-specific pretraining is the next lever.
+7. **CheXFound (ViT-L, 1M+ CXR DINOv2) is the new best in both settings:** 23.07% at lb=1.0 (+1.08 over ConvNeXt) and 18.89% hybrid (+2.84 over ConvNeXt hybrid). CXR pretraining gains are largest on medium classes in the SSL regime (+4.49), where better backbone features translate directly to higher-quality pseudo-labels. Critical: requires lr=1e-5, not the default 1e-4.
 
 ---
 
-## Updated Recommendations (Task 1)
+## Updated Recommendations
+
+### What Top CXR-LT 2024 Teams Did (arxiv 2506.07984)
+
+| Rank | Backbone | Pretraining | Task 1 | Task 2 |
+|------|----------|-------------|--------|--------|
+| T1-1st | ConvNeXt ensemble × 12 | ImageNet only | 0.281 | 0.511 |
+| T1-2nd | EfficientNetV2-L | ImageNet → NIH + CheXpert + VinDr + BRAX | 0.279 | 0.519 |
+| T1-3rd / T2-1st | ConvNeXt-S, EfficNetV2-S | ImageNet → MIMIC-CXR (CLIP) | 0.277 | **0.526** |
+| T1-4th | ConvNeXt-S + ML-Decoder | ImageNet → CheXpert + NIH + VinDr | 0.277 | — |
+
+**Insight:** The 1st place winner used ImageNet-only pretraining, compensating with a 12-model
+ensemble and diffusion-model synthetic data for rare tail classes. Domain-specific pretraining
+helped the 2nd–4th place teams but was not the decisive gap. The most relevant team for our
+pipeline is 4th place (dongkyunk) who used the same ML-Decoder head and added supervised
+CXR pretraining on NIH + CheXpert + VinDr-CXR before the task fine-tune.
+
+### Action Items (Priority Order)
 
 | Priority | Action | Expected Impact |
 |:---:|--------|----------------|
-| ★★★ | Run Hybrid-LB with more fine-tune epochs (40 instead of 20) | fine-tune best was still at ep 30 of 31 — clearly not saturated |
-| ★★★ | Try full lb=1.0 with Hybrid-LB split (all labeled, no pseudo-label restriction) | Would show how much of the 6 mAP gap is from labeled set size vs. split design |
-| ★★ | Add class-frequency loss reweighting on existing SSL runs | Tail still at 5.5–5.7 vs 9.4 for lb=1.0 — structural fix needed |
-| ★★ | Logit adjustment at inference | Standard long-tail prior bias correction, zero training cost |
-| ★ | Stratified labeled split | Preserve tail positives in unlabeled pool while boosting labeled coverage |
+| ★★★ | **Supervised pretraining on NIH Chest X-Ray14 → CXR-LT fine-tune** | Matches dongkyunk (4th place); same ML-Decoder head — directly replicable |
+| ★★★ | **Increase input resolution to 512–1024** | All top teams used 512–1024; we train at 224. Feature map goes from 7×7 to 16×16–32×32 |
+| ★★ | CLIP-based MIMIC-CXR pretraining (like XYPB, 1st Task 2) | Highest Task 2 (0.526) but complex to implement — BioMedLM + contrastive loss |
+| ★★ | Ensemble multiple ConvNeXt sizes (S, B) | 1st place used 12-model ensemble; even 2–3 models help |
+| ★★ | Diffusion model synthetic data for tail classes | 1st place key secret; ~100 synthetic images per rare class |
+| ★ | Add class-frequency loss reweighting | Tail still at 5.5–6.1 vs 9.4 for lb=1.0 — structural fix needed |
+| ★ | Logit adjustment at inference | Standard long-tail prior bias correction, zero training cost |
 
 ---
 

@@ -986,3 +986,135 @@ If < TResNet_L, investigate whether longer warmup epochs or lower LR closes the 
   memory if batch size is constrained. Don't go below 384×384 (12×12 feature maps get sparse).
 - **`dim_embed`**: Currently 512. With 1024-D backbone features the projection ratio is 2:1 (same
   direction as TResNet_L's 2432→512). No change needed but 768 or 1024 could be explored later.
+
+### Results (2026-05-28)
+
+| Configuration | Overall | Head | Medium | Tail |
+|---|:---:|:---:|:---:|:---:|
+| TResNet_L lb=1.0 (reference) | 22.01 | 54.00 | 16.27 | 9.40 |
+| ConvNeXt-Base lb=1.0 | 21.99 | 54.14 | 16.65 | 8.92 |
+| TResNet_L Hybrid-LB | 16.03 | 46.88 | 8.52 | 5.71 |
+| ConvNeXt-Base Hybrid-LB | 16.05 | 45.82 | 8.79 | 6.10 |
+
+**Conclusion:** ConvNeXt-Base with ImageNet-22K pretraining is statistically equivalent to
+TResNet_L in both lb=1.0 and hybrid-LB settings. The bottleneck is the SSL pipeline and the
+ImageNet domain gap, not the architecture. Domain-specific CXR pretraining is the next lever.
+
+---
+
+## Next Step: CXR Domain Pretraining
+
+### What the Top CXR-LT 2024 Teams Actually Did
+
+Full analysis of the 9 top solutions from the challenge paper (arxiv 2506.07984):
+
+| Rank | Team | Backbone | Pretraining | Task 1 | Task 2 |
+|------|------|----------|-------------|--------|--------|
+| T1-1st | zguo | ConvNeXt-S/B/T, ConvNeXt V2-B | ImageNet only | **0.281** | 0.511 |
+| T1-2nd | tianjie_dai | EfficientNetV2-L | ImageNet → NIH, CheXpert, VinDr, BRAX | 0.279 | **0.519** |
+| T1-3rd / T2-1st | XYPB | ConvNeXt-S, EfficientNetV2-S | ImageNet → MIMIC-CXR (CLIP) | 0.277 | **0.526** |
+| T1-4th | dongkyunk | ConvNeXt-S | ImageNet → CheXpert, NIH, VinDr | 0.277 | — |
+| T2-2nd | yangz16 | ViT-L (DINOv2) | Self-supervised on 710K CXR images | — | 0.511 |
+| T2-4th | YYama | ConvNeXt V2-S, MaxViT-T | ImageNet → NIH | — | 0.509 |
+
+**Key finding: The 1st place team used ImageNet-only pretraining!** Their secret was a
+12-model ensemble + diffusion-model synthetic data generation (~100 images per tail class
+with carefully crafted comorbidity prompts). Domain-specific CXR pretraining was used by
+2nd–4th place teams, but it was not the decisive factor.
+
+**Most relevant team for us: dongkyunk (4th place, Task 1)**
+- Same ML-Decoder classification head as DiCaP
+- Supervised multi-stage: ImageNet → CheXpert + NIH + VinDr-CXR
+- Resolution 1024 (vs our 224)
+- Added Noisy Student self-training (analogous to DiCaP's SSL phase)
+- CheXFusion multi-view aggregation
+
+---
+
+### Plan: Multi-Stage Supervised CXR Pretraining
+
+Follow the dongkyunk / tianjie_dai approach: supervised pretraining on publicly available
+CXR datasets before fine-tuning on CXR-LT 2024.
+
+#### Stage 1 — Pretrain on NIH Chest X-Ray14
+
+**Dataset:** NIH Chest X-Ray14 (112,120 images, 14 disease labels)
+- Publicly available, no DUA required
+- Download: `https://nihcc.app.box.com/v/ChestXray-NIHCC`
+- 14 classes: Atelectasis, Cardiomegaly, Consolidation, Edema, Effusion, Emphysema,
+  Fibrosis, Hernia, Infiltration, Mass, Nodule, Pleural Thickening, Pneumonia, Pneumothorax
+- 8 of these 14 classes overlap directly with CXR-LT 2024's 40 classes
+
+**Pretraining setup:**
+- Model: `convnext_base.fb_in22k_ft_in1k` (keep ImageNet-22K init, fine-tune on NIH)
+- Loss: ASL (same as our main pipeline)
+- Image resolution: 224×224 (can step up to 384 if memory allows)
+- Epochs: 20–30 (until val AP plateaus)
+- Save best checkpoint as `convnext_base_nih_pretrained.pth.tar`
+
+**Data format:** NIH provides a CSV (`Data_Entry_2017_v2020.csv`) with image paths and
+pipe-separated labels. Write a format script similar to `format_cxr2024.py`.
+
+---
+
+#### Stage 2 — Fine-tune on CXR-LT 2024 (full pipeline)
+
+Load `convnext_base_nih_pretrained.pth.tar` as the starting point instead of ImageNet
+weights. Run the full DiCaP pipeline: warm_up → main (SSL) → fine_tune.
+
+Add a new backbone variant `"convnext_base_nih"` in `cnn.py` that loads the local checkpoint:
+
+```python
+def _load_convnext_base_nih(pretrained):
+    model = timm.create_model("convnext_base", pretrained=False)
+    if pretrained:
+        ckpt = torch.load("./pretrained/convnext_base_nih.pth.tar", map_location="cpu")
+        key = "state_dict_ema" if "state_dict_ema" in ckpt else "state_dict"
+        sd = {k.replace("module.", ""): v for k, v in ckpt[key].items()}
+        model.load_state_dict(sd, strict=False)
+    return model
+
+_MODELS["convnext_base_nih"] = _load_convnext_base_nih
+_MODELS_INFO["convnext_base_nih"] = ModelInfo("norm_pre", "head.fc", 1024, 1024, 14, 32)
+```
+
+Note `dim_out=14` reflects NIH's 14 classes. The head (`head.fc`) will be re-initialized
+when DiCaP replaces it with the 40-class ClasswiseEncoder — only the backbone weights matter.
+
+---
+
+#### Alternative: CLIP-Based MIMIC-CXR Pretraining (like XYPB, 1st Task 2)
+
+XYPB's approach used contrastive image–text pretraining on MIMIC-CXR image–report pairs
+with BioMedLM as the text encoder. This is the most complex option but achieved the highest
+Task 2 mAP (0.526).
+
+MIMIC-CXR paired reports are at `/home/share/mimic-cxr/`. The approach requires:
+1. BioMedLM or BioGPT as the text encoder
+2. A CLIP-style symmetric contrastive loss over (image, report) pairs
+3. Significant GPU time (days at 1024×1024)
+
+**Recommendation:** Start with NIH supervised pretraining (Stage 1 above). If that gives
+≥1 pp improvement, proceed to CLIP-based MIMIC-CXR pretraining as a second iteration.
+
+---
+
+### Decision Checkpoints
+
+| Decision | Criterion |
+|----------|-----------|
+| NIH pretraining successful | Warmup mAP ≥ 23% (> ImageNet-22K baseline 22.15%) |
+| Proceed to CLIP pretraining | NIH warmup gains ≥ 1 pp but still below 25% |
+| Consider resolution increase | After pretraining gives gains; step up to 384×384 |
+| Try synthetic tail data (1st place strategy) | After all pretraining options explored |
+
+---
+
+### Files to Create
+
+| File | Purpose |
+|------|---------|
+| `data/nih/format_nih.py` | Parse NIH CSV, write 4 npy files to `data/nih/` |
+| `pretrain_nih.py` | Supervised pretraining script (can reuse warm_up.py logic) |
+| `pretrained/` | Directory for storing domain-pretrained checkpoints |
+| `script/pretrain_nih.sh` | Shell script for NIH pretraining run |

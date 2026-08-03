@@ -146,6 +146,11 @@ def parser_args():
         args.lb_bs = int(args.lb_bs / 2)
         args.ub_bs = int(args.ub_bs / 2)
 
+    if args.net == 'chexfound':
+        args.lb_bs = 16
+        args.ub_bs = 16
+        args.lr = 1e-5
+
     
     args.output = './output/' + args.output
     args.resume = '%s/%s/%s/%s/warmup_%s_%s/warmup_model.pth.tar'%(args.output, args.dataset_name, args.net, args.lb_ratio, args.loss_lb, args.warmup_epochs)
@@ -309,7 +314,7 @@ def main_worker(args, logger):
     # optimizer & scheduler
     optimizer = set_optimizer(model, args)
     args.steps_train = len(ub_train_loader)
-    scheduler = lr_scheduler.OneCycleLR(optimizer, max_lr=args.lr, steps_per_epoch=args.steps_train, epochs=args.epochs, pct_start=0.2)
+    scheduler = lr_scheduler.OneCycleLR(optimizer, max_lr=args.lr, steps_per_epoch=args.steps_train, epochs=args.epochs - args.start_epoch, pct_start=0.2)
 
     end = time.time()
     best_epoch = -1

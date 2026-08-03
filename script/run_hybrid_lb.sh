@@ -2,7 +2,7 @@ device_id=0
 dataset_dir='./data'               # training scripts append dataset_name → ./data/cxr_hybrid_lb
 eval_dataset_dir='./data/cxr_hybrid_lb'  # evaluate/plot scripts use this directly
 dataset_name='cxr_hybrid_lb'
-net='tresnet_l'
+net='chexfound'
 output='cxr_ours'
 
 # lb_ratio is ignored in pre-split mode (formatted_unlabeled_images.npy exists),
@@ -11,17 +11,17 @@ lb_ratio=40.0
 
 CUDA_VISIBLE_DEVICES=$device_id python warm_up.py \
 --dataset_name $dataset_name --dataset_dir $dataset_dir --lb_ratio $lb_ratio \
---net $net --loss_lb asl --warmup_epochs 12 --lr 1e-4 --output $output
+--net $net --loss_lb asl --warmup_epochs 12 --lr 1e-5 --output $output
 
 CUDA_VISIBLE_DEVICES=$device_id python main.py \
 --dataset_name $dataset_name --dataset_dir $dataset_dir --lb_ratio $lb_ratio \
---net $net --loss_lb asl --main_epochs 40 --warmup_epochs 12 --lr 1e-4 \
+--net $net --loss_lb asl --main_epochs 40 --warmup_epochs 12 --lr 1e-5 \
 --output $output --method main --ub_epoch_size 50000
 
 CUDA_VISIBLE_DEVICES=$device_id python fine_tune.py \
 --dataset_name $dataset_name --dataset_dir $dataset_dir --lb_ratio $lb_ratio \
 --net $net --loss_lb asl --output $output \
---method main --FT_method fine_tune --FT_lr 1e-4 --FT_epochs 20
+--method main --FT_method fine_tune --FT_lr 1e-5 --FT_epochs 20
 
 # Per-class mAP evaluation + plot
 python evaluate_cxr.py \

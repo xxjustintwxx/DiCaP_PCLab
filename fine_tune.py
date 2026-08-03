@@ -135,6 +135,11 @@ def parser_args():
         args.lb_bs = int(args.lb_bs / 2)
         args.ub_bs = int(args.ub_bs / 2)
 
+    if args.net == 'chexfound':
+        args.lb_bs = 16
+        args.ub_bs = 16
+        args.lr = 1e-5
+
     args.output = './output/' + args.output
     args.resume = '%s/%s/%s/%s/%s/best_model.pth.tar'%(args.output, args.dataset_name, args.net, args.lb_ratio, args.method)
 
@@ -285,14 +290,14 @@ def main_worker(args, logger):
     mAPs = AverageMeter('mAP', ':5.5f', val_only=True)
     mAPs_ema = AverageMeter('mAP_ema', ':5.5f', val_only=True)
     progress = ProgressMeter(
-        args.epochs,
+        args.start_epoch + args.FT_epochs,
         [eta, epoch_time, mAPs, mAPs_ema],
         prefix='=> Test Epoch: ')
 
     # optimizer & scheduler
     optimizer = set_optimizer(model, args)
     args.steps_train = len(lb_valid_loader)
-    scheduler = lr_scheduler.OneCycleLR(optimizer, max_lr=args.lr, steps_per_epoch=args.steps_train, epochs=args.epochs, pct_start=0.2)
+    scheduler = lr_scheduler.OneCycleLR(optimizer, max_lr=args.lr, steps_per_epoch=args.steps_train, epochs=args.FT_epochs, pct_start=0.2)
 
     end = time.time()
     best_epoch = -1
@@ -342,7 +347,7 @@ def main_worker(args, logger):
         mAPs_ema.update(mAP_ema)
         epoch_time.update(time.time() - end)
         end = time.time()
-        eta.update(epoch_time.avg * (args.epochs - epoch - 1))
+        eta.update(epoch_time.avg * (args.start_epoch + args.FT_epochs - epoch - 1))
 
         regular_mAP_list.append(mAP)
         ema_mAP_list.append(mAP_ema)
@@ -441,7 +446,7 @@ def train(lb_train_loader, model, ema_m, optimizer, scheduler, epoch, args, logg
     progress = ProgressMeter(
         args.steps_train,
         [loss_lb_ori, loss_ub_ori, loss_lb_pat, loss_ub_pat, lr, losses, mem],
-        prefix="Epoch: [{}/{}]".format(epoch, args.epochs))
+        prefix="Epoch: [{}/{}]".format(epoch, args.start_epoch + args.FT_epochs))
 
     def get_learning_rate(optimizer):
         for param_group in optimizer.param_groups:

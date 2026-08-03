@@ -122,6 +122,11 @@ def parser_args():
 
     args.ub_bs = max(32, 128 - args.warmup_batch_size)
 
+    if args.net == 'chexfound':
+        args.warmup_batch_size = 16
+        args.ub_bs = 16
+        args.lr = 1e-5
+
     args.output = './output/' + args.output
     args.n_classes = NUM_CLASS[args.dataset_name]
     args.dataset_dir = os.path.join(args.dataset_dir, args.dataset_name) 
@@ -236,7 +241,7 @@ def main_worker(args, logger):
     mAPs = AverageMeter('mAP', ':5.5f', val_only=True)
     mAPs_ema = AverageMeter('mAP_ema', ':5.5f', val_only=True)
     progress = ProgressMeter(
-        args.epochs,
+        args.warmup_epochs,
         [eta, epoch_time, mAPs, mAPs_ema],
         prefix='=> Test Epoch: ')
 
@@ -292,7 +297,7 @@ def main_worker(args, logger):
         mAPs_ema.update(mAP_ema)
         epoch_time.update(time.time() - end)
         end = time.time()
-        eta.update(epoch_time.avg * (args.epochs - epoch - 1))
+        eta.update(epoch_time.avg * (args.warmup_epochs - epoch - 1))
 
         regular_mAP_list.append(mAP)
         ema_mAP_list.append(mAP_ema)

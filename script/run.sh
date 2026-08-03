@@ -1,11 +1,11 @@
 device_id=0
 dataset_dir='./data'
-net='tresnet_l'
+net='chexfound'
 output='cxr_ours'
 #output='cxr_ours_weighted'
 #class_weight_gamma=0.5   # 0.0=off, 0.5=sqrt reweighting, 1.0=full inverse-freq
 
-for lb_ratio in 0.066
+for lb_ratio in 1.0
 do
     for dataset_name in 'cxr'
     do
@@ -18,7 +18,7 @@ do
 
     CUDA_VISIBLE_DEVICES=$device_id python main.py \
     --dataset_name $dataset_name --dataset_dir $dataset_dir --lb_ratio $lb_ratio \
-    --net $net --loss_lb asl --main_epochs 40 --warmup_epochs 12 --lr 1e-4 \
+    --net $net --loss_lb asl --main_epochs 25 --warmup_epochs 12 --lr 1e-4 \
     --output $output --method main --ub_epoch_size 50000
     # \
     # --class_weight_gamma $class_weight_gamma
