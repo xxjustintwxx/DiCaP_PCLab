@@ -1,11 +1,11 @@
 device_id=0
 dataset_dir='./data'
-net='chexfound'
+net='convnext_base'
 output='cxr_ours'
 #output='cxr_ours_weighted'
 #class_weight_gamma=0.5   # 0.0=off, 0.5=sqrt reweighting, 1.0=full inverse-freq
 
-for lb_ratio in 1.0
+for lb_ratio in 0.05
 do
     for dataset_name in 'cxr'
     do

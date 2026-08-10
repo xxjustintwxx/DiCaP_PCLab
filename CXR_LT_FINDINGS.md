@@ -1026,6 +1026,81 @@ tail-LB where SSL added +7.8 mAP. SSL is most impactful when the supervised base
 
 ---
 
+## Run: lb=0.05, ConvNeXt-Base, ASL loss
+
+**Date:** 2026-08-09
+**Checkpoint:** `output/cxr_ours/cxr/convnext_base/0.05/fine_tune/best_model.pth.tar`
+**Motivation:** Establish DiCaP + ConvNeXt-Base at lb=0.05 for fair comparison with CAP and other SSL baselines reported at low label ratios.
+
+### Overall Metrics
+
+| Metric | ResNet50 lb=0.05 | ConvNeXt-Base lb=0.05 | Δ |
+|--------|:---:|:---:|:---:|
+| Overall mAP | 14.76 | **15.03** | +0.27 |
+| Head mAP (>10%, 9 classes) | 47.27 | **48.15** | +0.88 |
+| Medium mAP (1–10%, 15 classes) | 7.11 | **7.49** | +0.38 |
+| Tail mAP (≤1%, 16 classes) | **3.64** | 3.47 | −0.17 |
+
+ConvNeXt-Base provides a small but consistent improvement over ResNet50 at the same label budget. Tail regression (−0.17) is within noise for ultra-rare classes.
+
+### Training Summary
+
+| Phase | Best mAP (EMA) | Best at epoch |
+|-------|---------------:|:---:|
+| Warmup (12 ep) | 14.62 | ep 7 |
+| Main SSL (25 ep) | 15.01 | ep 13 |
+| Fine-tune (20 ep) | 15.07 | ep 33 (still climbing) |
+| **Final eval (test)** | **15.03** | — |
+
+Fine-tune mAP increased monotonically through the last epoch (ep 33) with no plateau — extending FT epochs would likely push mAP higher. The main SSL phase peaked early (ep 13 of 25), consistent with limited pseudo-label quality at lb=0.05.
+
+### Per-Class AP (ConvNeXt-Base lb=0.05, test set)
+
+| Class | Train+Val # | Zone | AP |
+|---|---:|:---:|---:|
+| Support Devices | 99,240 | Head | 85.0 |
+| Lung Opacity | 89,213 | Head | 51.8 |
+| Cardiomegaly | 86,321 | Head | 58.1 |
+| Pleural Effusion | 76,831 | Head | 77.6 |
+| Atelectasis | 75,507 | Head | 52.1 |
+| Pneumonia | 53,721 | Head | 23.8 |
+| Edema | 43,202 | Head | 44.0 |
+| Normal | 39,380 | Head | 26.8 |
+| Enlarged Cardiomediastinum | 33,872 | Head | 14.3 |
+| Consolidation | 17,750 | Medium | 14.2 |
+| Pneumothorax | 16,200 | Medium | 27.6 |
+| Fracture | 13,144 | Medium | 8.3 |
+| Infiltration | 11,593 | Medium | 4.8 |
+| Rib Fracture | 10,169 | Medium | 5.6 |
+| Nodule | 8,650 | Medium | 5.3 |
+| Mass | 6,077 | Medium | 4.4 |
+| Calcification of the Aorta | 4,833 | Medium | 6.9 |
+| Hernia | 4,660 | Medium | 8.3 |
+| Emphysema | 4,402 | Medium | 13.0 |
+| Adenopathy | 3,886 | Medium | 2.5 |
+| Tortuous Aorta | 3,831 | Medium | 4.1 |
+| Pleural Thickening | 3,751 | Medium | 3.5 |
+| Granuloma | 3,348 | Medium | 2.0 |
+| Fissure | 3,154 | Medium | 1.9 |
+| Lung Lesion | 2,652 | Tail | 2.1 |
+| Subcutaneous Emphysema | 2,477 | Tail | 29.6 |
+| Tuberculosis | 2,455 | Tail | 2.8 |
+| Pulmonary Embolism | 1,935 | Tail | 0.7 |
+| Fibrosis | 1,332 | Tail | 3.0 |
+| Pulmonary Hypertension | 1,022 | Tail | 0.9 |
+| Kyphosis | 890 | Tail | 1.2 |
+| Pneumomediastinum | 826 | Tail | 9.2 |
+| Infarction | 823 | Tail | 0.3 |
+| Hydropneumothorax | 774 | Tail | 1.9 |
+| Pleural Other | 696 | Tail | 0.8 |
+| Pneumoperitoneum | 570 | Tail | 2.6 |
+| Azygos Lobe | 219 | Tail | 0.1 |
+| Round(ed) Atelectasis | 218 | Tail | 0.2 |
+| Clavicle Fracture | 187 | Tail | 0.1 |
+| Lobar Atelectasis | 155 | Tail | 0.1 |
+
+---
+
 ## Run: lb=1.0, ConvNeXt-Base, ASL loss
 
 **Date:** 2026-05-27
@@ -1342,6 +1417,7 @@ CheXFound hybrid beats ConvNeXt hybrid on 36/40 classes, ties on 2, and trails o
 | Configuration | Overall mAP | Head mAP | Medium mAP | Tail mAP | Notes |
 |---|:---:|:---:|:---:|:---:|---|
 | ResNet50, lb=0.05 | 14.76 | 47.27 | 7.11 | 3.64 | Supervised-only |
+| ConvNeXt-Base, lb=0.05 | 15.03 | 48.15 | 7.49 | 3.47 | DiCaP SSL baseline for CAP comparison |
 | ResNet50, lb=1.0 | 21.34 | 53.58 | 15.72 | 8.47 | Supervised-only |
 | TResNet_L, lb=1.0 | 22.01 | 54.00 | 16.27 | 9.40 | Full labeled baseline |
 | ConvNeXt-Base, lb=1.0 | 21.99 | 54.14 | 16.65 | 8.92 | ImageNet-22K; scheduler bug in FT |
